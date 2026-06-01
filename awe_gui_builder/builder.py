@@ -17,9 +17,17 @@ def _list_windows() -> list[dict[str, str]]:
     from pywinauto import Desktop
 
     windows = []
-    for w in Desktop(backend="uia").windows():
+    for backend in ["uia", "win32"]:
         try:
-            windows.append({"title": w.window_text(), "class_name": w.class_name()})
+            for w in Desktop(backend=backend).windows():
+                try:
+                    windows.append({
+                        "backend": backend,
+                        "title": w.window_text(),
+                        "class_name": w.class_name(),
+                    })
+                except Exception:
+                    continue
         except Exception:
             continue
     return windows
@@ -58,48 +66,89 @@ def _main_window(app, config: AweGuiConfig):
     return app.window(title_re=config.main_window_title_re)
 
 
-def _send_open_file(main, input_awj: Path, result: BuildResult):
+def _find_dialog(title_patterns: list[str], timeout_sec: float):
     from pywinauto import Desktop
 
+    deadline = time.monotonic() + timeout_sec
+    last_error = None
+    while time.monotonic() < deadline:
+        for backend in ["uia", "win32"]:
+            for pattern in title_patterns:
+                try:
+                    candidate = Desktop(backend=backend).window(title_re=pattern)
+                    candidate.wait("visible", timeout=1)
+                    return candidate, backend, pattern
+                except Exception as exc:
+                    last_error = exc
+        time.sleep(0.25)
+    raise RuntimeError(f"Dialog not found. patterns={title_patterns!r}, last_error={last_error!r}")
+
+
+def _type_path_and_enter(dlg, input_awj: Path, result: BuildResult):
+    # Most reliable for native file dialogs: focus, Ctrl+L or Alt+D if address bar exists,
+    # then type full path. If that does not work, the plain filename field often still accepts it.
+    path_text = str(input_awj)
+    _debug(result, f"Typing AWJ path into dialog: {path_text}")
+    dlg.set_focus()
+    time.sleep(0.2)
+
+    attempts = [
+        ("plain", ""),
+        ("ctrl_l", "^l"),
+        ("alt_d", "%d"),
+    ]
+
+    last_error = None
+    for name, prefix in attempts:
+        try:
+            _debug(result, f"Path entry attempt: {name}")
+            dlg.set_focus()
+            time.sleep(0.2)
+            if prefix:
+                dlg.type_keys(prefix)
+                time.sleep(0.2)
+            dlg.type_keys("^a")
+            time.sleep(0.1)
+            dlg.type_keys(path_text, with_spaces=True, set_foreground=True)
+            time.sleep(0.2)
+            dlg.type_keys("{ENTER}")
+            return
+        except Exception as exc:
+            last_error = exc
+            _debug(result, f"Path entry attempt {name} failed: {exc!r}")
+    raise RuntimeError(f"Could not type path into open dialog: {last_error!r}")
+
+
+def _send_open_file(main, input_awj: Path, result: BuildResult):
     _debug(result, "Focusing main window")
     main.set_focus()
     time.sleep(0.5)
 
     _debug(result, "Sending Ctrl+O")
     main.type_keys("^o")
-    time.sleep(1.5)
+    time.sleep(1.0)
 
     result.details["windows_after_ctrl_o"] = _list_windows()
 
     dialog_patterns = [
+        ".*Open Design.*",
         ".*Open.*|.*열기.*",
         ".*Select.*|.*선택.*",
         ".*File.*|.*파일.*",
     ]
 
-    last_error = None
-    dlg = None
-    for pattern in dialog_patterns:
-        try:
-            candidate = Desktop(backend="uia").window(title_re=pattern)
-            candidate.wait("visible", timeout=5)
-            dlg = candidate
-            _debug(result, f"Open dialog matched: {pattern}")
-            break
-        except Exception as exc:
-            last_error = exc
+    dlg, backend, pattern = _find_dialog(dialog_patterns, timeout_sec=20)
+    _debug(result, f"Open dialog matched backend={backend}, pattern={pattern}")
 
-    if dlg is None:
-        raise RuntimeError(f"Open dialog did not appear after Ctrl+O. Last error: {last_error!r}")
+    try:
+        controls = []
+        for c in dlg.descendants():
+            controls.append({"title": c.window_text(), "control_type": c.friendly_class_name()})
+        result.details["open_dialog_controls"] = controls[:200]
+    except Exception as exc:
+        result.details["open_dialog_controls_error"] = repr(exc)
 
-    dlg.set_focus()
-    time.sleep(0.3)
-
-    # Keyboard approach is often more robust than trying to identify localized controls.
-    _debug(result, f"Typing AWJ path: {input_awj}")
-    dlg.type_keys(str(input_awj), with_spaces=True, set_foreground=True)
-    time.sleep(0.2)
-    dlg.type_keys("{ENTER}")
+    _type_path_and_enter(dlg, input_awj, result)
 
 
 def _open_generate_dialog(main, config: AweGuiConfig, result: BuildResult):
@@ -127,16 +176,13 @@ def _open_generate_dialog(main, config: AweGuiConfig, result: BuildResult):
 
 
 def _click_generate(config: AweGuiConfig, result: BuildResult):
-    from pywinauto import Desktop
-
     _debug(result, f"Waiting for Generate dialog: {config.generate_dialog_title_re}")
     result.details["windows_before_generate_dialog"] = _list_windows()
 
-    dlg = Desktop(backend="uia").window(title_re=config.generate_dialog_title_re)
-    dlg.wait("visible", timeout=20)
+    dlg, backend, pattern = _find_dialog([config.generate_dialog_title_re, ".*Generate.*", ".*Target.*"], timeout_sec=20)
+    _debug(result, f"Generate dialog matched backend={backend}, pattern={pattern}")
     dlg.set_focus()
 
-    # Capture exposed controls so we can tune selectors after the first failure.
     controls = []
     try:
         for c in dlg.descendants():
