@@ -21,6 +21,7 @@ class AweGuiConfig:
     close_designer_after_build: bool = False
     inspect_title_filter: str = "AWE|Audio|Open|Generate|Target|Design"
     inspect_limit: int = 80
+    tools_menu_down_count: int = 2
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "AweGuiConfig":
@@ -38,6 +39,7 @@ class AweGuiConfig:
             close_designer_after_build=bool(data.get("close_designer_after_build", False)),
             inspect_title_filter=str(data.get("inspect_title_filter", "AWE|Audio|Open|Generate|Target|Design")),
             inspect_limit=int(data.get("inspect_limit", 80)),
+            tools_menu_down_count=int(data.get("tools_menu_down_count", 2)),
         )
 
 
