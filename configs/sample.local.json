@@ -3,15 +3,18 @@
   "main_window_title_re": ".*AWE Designer.*|.*Audio Weaver.*",
   "loaded_window_title_re_template": ".*AWE Designer -.*{stem}.*|.*{stem}.*",
   "generate_dialog_title_re": ".*Generate Target Files.*",
+  "generate_error_dialog_title_re": ".*Generate Target Files Error.*",
   "open_timeout_sec": 90,
   "load_wait_sec": 8.0,
-  "generate_wait_sec": 20.0,
+  "generate_wait_sec": 2.0,
   "expected_extensions": [".awb", ".tsf"],
   "screenshot_dir": "artifacts/screenshots",
   "use_keyboard_fallback": true,
   "close_designer_after_build": false,
-  "inspect_title_filter": "AWE|Audio|Open|Generate|Target|Design",
+  "inspect_title_filter": "AWE|Audio|Open|Generate|Target|Design|Error|Done",
   "inspect_limit": 80,
   "tools_menu_down_count": 2,
-  "generate_button_tab_count": 0
+  "generate_button_tab_count": 11,
+  "generate_dialog_ready_delay_sec": 0.5,
+  "post_generate_timeout_sec": 30.0
 }
