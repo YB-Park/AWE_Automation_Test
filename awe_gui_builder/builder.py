@@ -201,32 +201,83 @@ def _open_generate_dialog(design_win, config: AweGuiConfig, result: BuildResult)
     design_win.type_keys("{ENTER}")
 
 
+def _snapshot_dialog_controls(dlg, result: BuildResult) -> None:
+    controls = []
+    try:
+        for c in dlg.descendants():
+            text = c.window_text()
+            ctype = c.friendly_class_name()
+            try:
+                rect = c.rectangle()
+                rect_text = f"{rect.left},{rect.top},{rect.right},{rect.bottom}"
+            except Exception:
+                rect_text = ""
+            if text or ctype in ("Edit", "ComboBox", "Button", "CheckBox"):
+                controls.append({"title": text, "control_type": ctype, "rect": rect_text})
+    except Exception as exc:
+        controls.append({"error": repr(exc)})
+    result.details["generate_dialog_controls"] = controls[:160]
+
+
 def _click_generate(config: AweGuiConfig, result: BuildResult):
     _debug(result, f"Waiting for Generate dialog: {config.generate_dialog_title_re}")
     result.details["windows_before_generate_dialog"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
     dlg, backend, pattern = _find_dialog([config.generate_dialog_title_re, ".*Generate.*", ".*Target.*"], timeout_sec=20)
     _debug(result, f"Generate dialog matched backend={backend}, pattern={pattern}, title={dlg.window_text()}")
     dlg.set_focus()
-    controls = []
-    try:
-        for c in dlg.descendants():
-            text = c.window_text()
-            ctype = c.friendly_class_name()
-            if text or ctype in ("Edit", "ComboBox", "Button", "CheckBox"):
-                controls.append({"title": text, "control_type": ctype})
-    except Exception as exc:
-        controls.append({"error": repr(exc)})
-    result.details["generate_dialog_controls"] = controls[:120]
-    for name in ["Generate", "OK", "확인"]:
+    time.sleep(0.4)
+    _snapshot_dialog_controls(dlg, result)
+
+    # Try direct UIA/win32 button methods first.
+    for name in ["Generate", "&Generate", "OK", "확인"]:
         try:
-            _debug(result, f"Trying button: {name}")
+            _debug(result, f"Trying child_window button click_input: {name}")
             btn = dlg.child_window(title=name, control_type="Button")
             btn.wait("enabled", timeout=2)
             btn.click_input()
             return
         except Exception as exc:
-            _debug(result, f"Button {name!r} failed: {exc!r}")
-    _debug(result, "Falling back to Enter in Generate dialog")
+            _debug(result, f"click_input button {name!r} failed: {exc!r}")
+        try:
+            _debug(result, f"Trying child_window button invoke/click: {name}")
+            btn = dlg.child_window(title=name)
+            btn.wait("enabled", timeout=2)
+            try:
+                btn.invoke()
+            except Exception:
+                btn.click()
+            return
+        except Exception as exc:
+            _debug(result, f"invoke/click button {name!r} failed: {exc!r}")
+
+    # Try discovered controls whose text contains Generate.
+    try:
+        candidates = []
+        for c in dlg.descendants():
+            text = c.window_text() or ""
+            if "generate" in text.lower():
+                candidates.append(c)
+        _debug(result, f"Generate-like control candidates: {len(candidates)}")
+        for c in candidates:
+            try:
+                _debug(result, f"Trying generated candidate: title={c.window_text()!r}, type={c.friendly_class_name()!r}")
+                c.click_input()
+                return
+            except Exception as exc:
+                _debug(result, f"candidate click_input failed: {exc!r}")
+    except Exception as exc:
+        _debug(result, f"Generate-like candidate scan failed: {exc!r}")
+
+    # If button is not automatable, use keyboard. Some MATLAB dialogs only respond this way.
+    tab_count = max(0, int(config.generate_button_tab_count))
+    _debug(result, f"Keyboard fallback in Generate dialog: Tab x {tab_count}, Space, Enter")
+    dlg.set_focus()
+    time.sleep(0.2)
+    for _ in range(tab_count):
+        dlg.type_keys("{TAB}")
+        time.sleep(0.08)
+    dlg.type_keys("{SPACE}")
+    time.sleep(0.2)
     dlg.type_keys("{ENTER}")
 
 
