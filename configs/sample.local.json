@@ -1,12 +1,15 @@
 {
   "designer_exe": "C:\\Program Files\\DSP Concepts\\Audio Weaver Designer\\Audio Weaver Designer.exe",
-  "main_window_title_re": ".*Audio Weaver.*",
+  "main_window_title_re": ".*AWE Designer.*|.*Audio Weaver.*",
+  "loaded_window_title_re_template": ".*AWE Designer -.*{stem}.*|.*{stem}.*",
   "generate_dialog_title_re": ".*Generate Target Files.*",
   "open_timeout_sec": 90,
-  "load_wait_sec": 5.0,
+  "load_wait_sec": 8.0,
   "generate_wait_sec": 20.0,
   "expected_extensions": [".awb", ".tsf"],
   "screenshot_dir": "artifacts/screenshots",
   "use_keyboard_fallback": true,
-  "close_designer_after_build": false
+  "close_designer_after_build": false,
+  "inspect_title_filter": "AWE|Audio|Open|Generate|Target|Design",
+  "inspect_limit": 80
 }
