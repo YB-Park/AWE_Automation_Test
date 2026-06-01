@@ -1,0 +1,12 @@
+{
+  "designer_exe": "C:\\Program Files\\DSP Concepts\\Audio Weaver Designer\\Audio Weaver Designer.exe",
+  "main_window_title_re": ".*Audio Weaver.*",
+  "generate_dialog_title_re": ".*Generate Target Files.*",
+  "open_timeout_sec": 90,
+  "load_wait_sec": 5.0,
+  "generate_wait_sec": 20.0,
+  "expected_extensions": [".awb", ".tsf"],
+  "screenshot_dir": "artifacts/screenshots",
+  "use_keyboard_fallback": true,
+  "close_designer_after_build": false
+}
