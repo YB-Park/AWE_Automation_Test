@@ -22,6 +22,7 @@ class AweGuiConfig:
     inspect_title_filter: str = "AWE|Audio|Open|Generate|Target|Design"
     inspect_limit: int = 80
     tools_menu_down_count: int = 2
+    generate_button_tab_count: int = 0
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "AweGuiConfig":
@@ -40,6 +41,7 @@ class AweGuiConfig:
             inspect_title_filter=str(data.get("inspect_title_filter", "AWE|Audio|Open|Generate|Target|Design")),
             inspect_limit=int(data.get("inspect_limit", 80)),
             tools_menu_down_count=int(data.get("tools_menu_down_count", 2)),
+            generate_button_tab_count=int(data.get("generate_button_tab_count", 0)),
         )
 
 
