@@ -201,6 +201,26 @@ def _open_generate_dialog(design_win, config: AweGuiConfig, result: BuildResult)
     design_win.type_keys("{ENTER}")
 
 
+def _read_control_texts(dlg, limit: int = 200) -> list[str]:
+    texts: list[str] = []
+    seen: set[str] = set()
+    try:
+        for c in dlg.descendants():
+            try:
+                text = c.window_text()
+            except Exception:
+                continue
+            text = (text or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                texts.append(text)
+                if len(texts) >= limit:
+                    break
+    except Exception:
+        pass
+    return texts
+
+
 def _snapshot_dialog_controls(dlg, result: BuildResult) -> None:
     controls = []
     try:
@@ -222,63 +242,67 @@ def _snapshot_dialog_controls(dlg, result: BuildResult) -> None:
 def _click_generate(config: AweGuiConfig, result: BuildResult):
     _debug(result, f"Waiting for Generate dialog: {config.generate_dialog_title_re}")
     result.details["windows_before_generate_dialog"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
-    dlg, backend, pattern = _find_dialog([config.generate_dialog_title_re, ".*Generate.*", ".*Target.*"], timeout_sec=20)
+    dlg, backend, pattern = _find_dialog([config.generate_dialog_title_re, ".*Generate.*", ".*Target.*"], timeout_sec=5)
     _debug(result, f"Generate dialog matched backend={backend}, pattern={pattern}, title={dlg.window_text()}")
     dlg.set_focus()
-    time.sleep(0.4)
+    time.sleep(max(0.0, config.generate_dialog_ready_delay_sec))
     _snapshot_dialog_controls(dlg, result)
 
-    # Try direct UIA/win32 button methods first.
+    # If tab count is configured, use it first. This is much faster for AWE/MATLAB dialogs
+    # where button discovery is visible to humans but unreliable through UI Automation.
+    tab_count = max(0, int(config.generate_button_tab_count))
+    if tab_count > 0:
+        _debug(result, f"Keyboard-first Generate click: Tab x {tab_count}, Space")
+        for _ in range(tab_count):
+            dlg.type_keys("{TAB}")
+            time.sleep(0.04)
+        dlg.type_keys("{SPACE}")
+        return
+
+    # Fallback: direct UIA/win32 methods.
     for name in ["Generate", "&Generate", "OK", "확인"]:
         try:
             _debug(result, f"Trying child_window button click_input: {name}")
             btn = dlg.child_window(title=name, control_type="Button")
-            btn.wait("enabled", timeout=2)
+            btn.wait("enabled", timeout=1)
             btn.click_input()
             return
         except Exception as exc:
             _debug(result, f"click_input button {name!r} failed: {exc!r}")
-        try:
-            _debug(result, f"Trying child_window button invoke/click: {name}")
-            btn = dlg.child_window(title=name)
-            btn.wait("enabled", timeout=2)
-            try:
-                btn.invoke()
-            except Exception:
-                btn.click()
-            return
-        except Exception as exc:
-            _debug(result, f"invoke/click button {name!r} failed: {exc!r}")
 
-    # Try discovered controls whose text contains Generate.
-    try:
-        candidates = []
-        for c in dlg.descendants():
-            text = c.window_text() or ""
-            if "generate" in text.lower():
-                candidates.append(c)
-        _debug(result, f"Generate-like control candidates: {len(candidates)}")
-        for c in candidates:
-            try:
-                _debug(result, f"Trying generated candidate: title={c.window_text()!r}, type={c.friendly_class_name()!r}")
-                c.click_input()
-                return
-            except Exception as exc:
-                _debug(result, f"candidate click_input failed: {exc!r}")
-    except Exception as exc:
-        _debug(result, f"Generate-like candidate scan failed: {exc!r}")
-
-    # If button is not automatable, use keyboard. Some MATLAB dialogs only respond this way.
-    tab_count = max(0, int(config.generate_button_tab_count))
-    _debug(result, f"Keyboard fallback in Generate dialog: Tab x {tab_count}, Space, Enter")
-    dlg.set_focus()
-    time.sleep(0.2)
-    for _ in range(tab_count):
-        dlg.type_keys("{TAB}")
-        time.sleep(0.08)
-    dlg.type_keys("{SPACE}")
-    time.sleep(0.2)
+    _debug(result, "Final fallback: Enter in Generate dialog")
     dlg.type_keys("{ENTER}")
+
+
+def _inspect_post_generate_dialog(config: AweGuiConfig, result: BuildResult) -> dict[str, object] | None:
+    from pywinauto import Desktop
+
+    _debug(result, "Waiting for post-generate success/error dialog")
+    deadline = time.monotonic() + max(0.0, config.post_generate_timeout_sec)
+    success_pattern = config.generate_dialog_title_re
+    error_pattern = config.generate_error_dialog_title_re
+
+    while time.monotonic() < deadline:
+        for backend in ["uia", "win32"]:
+            for kind, pattern in [("error", error_pattern), ("success", success_pattern)]:
+                try:
+                    dlg = Desktop(backend=backend).window(title_re=pattern)
+                    dlg.wait("visible", timeout=0.5)
+                    title = dlg.window_text()
+                    texts = _read_control_texts(dlg)
+                    # Avoid treating the original Generate dialog as success before it changes.
+                    joined = "\n".join(texts)
+                    if kind == "success" and "Done. Files generated to:" not in joined:
+                        continue
+                    _debug(result, f"Post-generate dialog matched kind={kind}, backend={backend}, title={title!r}")
+                    return {"kind": kind, "title": title, "texts": texts}
+                except Exception:
+                    continue
+        time.sleep(0.5)
+
+    _debug(result, "No post-generate dialog detected before timeout")
+    result.details["windows_after_generate_timeout"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
+    return None
 
 
 def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Path) -> BuildResult:
@@ -310,6 +334,18 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
 
         result.stage = "click_generate"
         _click_generate(config, result)
+
+        result.stage = "read_generate_result"
+        post_dialog = _inspect_post_generate_dialog(config, result)
+        if post_dialog:
+            result.details["post_generate_dialog"] = post_dialog
+            if post_dialog.get("kind") == "error":
+                result.ok = False
+                result.message = "Generate Target Files failed"
+                result.errors.extend(str(x) for x in post_dialog.get("texts", []))
+                result.elapsed_sec = round(time.monotonic() - started, 3)
+                return result
+
         time.sleep(config.generate_wait_sec)
 
         result.stage = "verify_artifacts"
