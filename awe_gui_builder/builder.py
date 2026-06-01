@@ -16,7 +16,6 @@ def _debug(result: BuildResult, message: str) -> None:
 
 
 def _set_clipboard_text(text: str) -> None:
-    # Avoid pyperclip dependency. clip.exe is available on normal Windows installs.
     subprocess.run("clip", input=text, text=True, check=True, shell=True)
 
 
@@ -33,11 +32,7 @@ def _list_windows(title_filter: str | None = None, limit: int = 200) -> list[dic
                     class_name = w.class_name()
                     if rx and not (rx.search(title or "") or rx.search(class_name or "")):
                         continue
-                    windows.append({
-                        "backend": backend,
-                        "title": title,
-                        "class_name": class_name,
-                    })
+                    windows.append({"backend": backend, "title": title, "class_name": class_name})
                     if len(windows) >= limit:
                         return windows
                 except Exception:
@@ -60,7 +55,6 @@ def _connect_or_start_designer(config: AweGuiConfig, result: BuildResult):
 
     _debug(result, f"Starting Designer: {config.designer_exe}")
     app = Application(backend="uia").start(config.designer_exe)
-
     deadline = time.monotonic() + config.open_timeout_sec
     last_error = None
     while time.monotonic() < deadline:
@@ -98,21 +92,22 @@ def _find_dialog(title_patterns: list[str], timeout_sec: float):
     raise RuntimeError(f"Dialog not found. patterns={title_patterns!r}, last_error={last_error!r}")
 
 
+def _active_window():
+    from pywinauto import Desktop
+    return Desktop(backend="uia").get_active()
+
+
 def _type_path_and_enter(dlg, input_awj: Path, result: BuildResult):
     path_text = str(input_awj)
     _debug(result, f"Entering AWJ path via clipboard: {path_text}")
     _set_clipboard_text(path_text)
     dlg.set_focus()
     time.sleep(0.3)
-
-    # Do NOT click guessed Edit/ComboBox controls. On AWE's Open Design dialog that can hit
-    # the upper-right search field. Keyboard traversal is more stable for this dialog.
     try:
-        dlg.type_keys("%n")  # Common Windows file dialog accelerator: File name
+        dlg.type_keys("%n")
         time.sleep(0.2)
     except Exception as exc:
-        _debug(result, f"Alt+N failed, continuing with Ctrl+V fallback: {exc!r}")
-
+        _debug(result, f"Alt+N failed, continuing: {exc!r}")
     dlg.type_keys("^a")
     time.sleep(0.1)
     dlg.type_keys("^v")
@@ -120,15 +115,17 @@ def _type_path_and_enter(dlg, input_awj: Path, result: BuildResult):
     dlg.type_keys("{ENTER}")
 
 
-def _wait_for_loaded_design_window(config: AweGuiConfig, input_awj: Path, result: BuildResult):
+def _wait_for_loaded_design_window(config: AweGuiConfig, input_awj: Path, fallback_win, result: BuildResult):
     from pywinauto import Desktop
 
-    stem = re.escape(input_awj.stem)
-    pattern = config.loaded_window_title_re_template.format(stem=stem, filename=re.escape(input_awj.name))
+    stem_raw = input_awj.stem
+    filename_raw = input_awj.name
+    pattern = config.loaded_window_title_re_template.format(stem=re.escape(stem_raw), filename=re.escape(filename_raw))
     _debug(result, f"Waiting for loaded design window: {pattern}")
 
     deadline = time.monotonic() + max(config.load_wait_sec, 5.0)
     last_error = None
+    seen = []
     while time.monotonic() < deadline:
         for backend in ["uia", "win32"]:
             try:
@@ -138,7 +135,30 @@ def _wait_for_loaded_design_window(config: AweGuiConfig, input_awj: Path, result
                 return win
             except Exception as exc:
                 last_error = exc
+        try:
+            active = _active_window()
+            active_title = active.window_text()
+            if active_title and active_title not in seen:
+                seen.append(active_title)
+                _debug(result, f"Active window while waiting: {active_title!r}")
+            if stem_raw.lower() in (active_title or "").lower() or filename_raw.lower() in (active_title or "").lower():
+                _debug(result, f"Using active window as loaded design window: {active_title!r}")
+                return active
+        except Exception as exc:
+            _debug(result, f"Active window check failed: {exc!r}")
         time.sleep(0.5)
+
+    # Last resort: AWE appears to reuse the same top-level window. If the visible/active title looks
+    # wrong to pywinauto but the GUI has actually loaded the file, continuing with the original window
+    # is better than stopping here.
+    try:
+        current_title = fallback_win.window_text()
+        _debug(result, f"Falling back to original window, current title={current_title!r}")
+        result.details["loaded_window_fallback"] = "original_window"
+        result.details["windows_after_open_file"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
+        return fallback_win
+    except Exception:
+        pass
 
     result.details["windows_after_open_file"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
     raise RuntimeError(f"Could not find loaded design window using pattern {pattern!r}. Last error: {last_error!r}")
@@ -148,42 +168,21 @@ def _send_open_file(main, input_awj: Path, config: AweGuiConfig, result: BuildRe
     _debug(result, "Focusing launcher/main window")
     main.set_focus()
     time.sleep(0.5)
-
     _debug(result, "Sending Ctrl+O")
     main.type_keys("^o")
     time.sleep(1.0)
-
     result.details["windows_after_ctrl_o"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
 
-    dialog_patterns = [
-        ".*Open Design.*",
-        ".*Open.*|.*열기.*",
-        ".*Select.*|.*선택.*",
-        ".*File.*|.*파일.*",
-    ]
-
-    dlg, backend, pattern = _find_dialog(dialog_patterns, timeout_sec=20)
+    dlg, backend, pattern = _find_dialog([".*Open Design.*", ".*Open.*|.*열기.*", ".*Select.*|.*선택.*", ".*File.*|.*파일.*"], timeout_sec=20)
     _debug(result, f"Open dialog matched backend={backend}, pattern={pattern}, title={dlg.window_text()}")
-
-    try:
-        controls = []
-        for c in dlg.descendants():
-            text = c.window_text()
-            ctype = c.friendly_class_name()
-            if text or ctype in ("Edit", "ComboBox", "Button"):
-                controls.append({"title": text, "control_type": ctype})
-        result.details["open_dialog_controls"] = controls[:80]
-    except Exception as exc:
-        result.details["open_dialog_controls_error"] = repr(exc)
-
     _type_path_and_enter(dlg, input_awj, result)
-    return _wait_for_loaded_design_window(config, input_awj, result)
+    return _wait_for_loaded_design_window(config, input_awj, main, result)
 
 
 def _open_generate_dialog(design_win, config: AweGuiConfig, result: BuildResult):
     design_win.set_focus()
     time.sleep(0.5)
-
+    _debug(result, f"Generate command target window title: {design_win.window_text()!r}")
     _debug(result, "Trying menu_select: Tools->Generate Target Files")
     try:
         design_win.menu_select("Tools->Generate Target Files")
@@ -194,7 +193,7 @@ def _open_generate_dialog(design_win, config: AweGuiConfig, result: BuildResult)
     if not config.use_keyboard_fallback:
         raise RuntimeError("Could not open Generate Target Files via menu_select, and keyboard fallback is disabled")
 
-    _debug(result, "Trying keyboard fallback on loaded design window: Alt+T then Down x 8 then Enter")
+    _debug(result, "Trying keyboard fallback on design window: Alt+T then Down x 8 then Enter")
     design_win.type_keys("%t")
     time.sleep(0.8)
     result.details["windows_after_alt_t"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
@@ -207,11 +206,9 @@ def _open_generate_dialog(design_win, config: AweGuiConfig, result: BuildResult)
 def _click_generate(config: AweGuiConfig, result: BuildResult):
     _debug(result, f"Waiting for Generate dialog: {config.generate_dialog_title_re}")
     result.details["windows_before_generate_dialog"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
-
     dlg, backend, pattern = _find_dialog([config.generate_dialog_title_re, ".*Generate.*", ".*Target.*"], timeout_sec=20)
     _debug(result, f"Generate dialog matched backend={backend}, pattern={pattern}, title={dlg.window_text()}")
     dlg.set_focus()
-
     controls = []
     try:
         for c in dlg.descendants():
@@ -222,7 +219,6 @@ def _click_generate(config: AweGuiConfig, result: BuildResult):
     except Exception as exc:
         controls.append({"error": repr(exc)})
     result.details["generate_dialog_controls"] = controls[:120]
-
     for name in ["Generate", "OK", "확인"]:
         try:
             _debug(result, f"Trying button: {name}")
@@ -232,7 +228,6 @@ def _click_generate(config: AweGuiConfig, result: BuildResult):
             return
         except Exception as exc:
             _debug(result, f"Button {name!r} failed: {exc!r}")
-
     _debug(result, "Falling back to Enter in Generate dialog")
     dlg.type_keys("{ENTER}")
 
@@ -241,14 +236,7 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
     started = time.monotonic()
     input_path = Path(input_awj).resolve()
     out_path = ensure_clean_output_dir(output_dir).resolve()
-
-    result = BuildResult(
-        ok=False,
-        stage="start",
-        message="Build started",
-        input_awj=str(input_path),
-        output_dir=str(out_path),
-    )
+    result = BuildResult(ok=False, stage="start", message="Build started", input_awj=str(input_path), output_dir=str(out_path))
 
     if not input_path.exists():
         result.stage = "validate_input"
@@ -258,7 +246,6 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
         return result
 
     before = snapshot_files(out_path)
-
     try:
         result.stage = "start_designer"
         app = _connect_or_start_designer(config, result)
@@ -282,7 +269,6 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
         result.generated_files = changed
         if missing:
             result.warnings.append("Missing expected extensions: " + ", ".join(missing))
-
         result.ok = ok
         result.message = "Generated expected artifacts" if ok else "Generate step completed, but expected artifacts were not found"
 
@@ -291,7 +277,6 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
                 design_win.close()
             except Exception:
                 pass
-
     except Exception as exc:
         result.ok = False
         result.message = f"Automation failed at stage '{result.stage}': {exc}"
@@ -307,6 +292,11 @@ def inspect_windows(config: AweGuiConfig) -> BuildResult:
     result = BuildResult(ok=True, stage="inspect", message="Window inspection completed")
     try:
         result.details["windows"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
+        try:
+            active = _active_window()
+            result.details["active_window"] = {"title": active.window_text(), "class_name": active.class_name()}
+        except Exception as exc:
+            result.details["active_window_error"] = repr(exc)
         result.screenshot = capture_screenshot(config.screenshot_dir, prefix="inspect")
     except Exception as exc:
         result.ok = False
