@@ -148,9 +148,6 @@ def _wait_for_loaded_design_window(config: AweGuiConfig, input_awj: Path, fallba
             _debug(result, f"Active window check failed: {exc!r}")
         time.sleep(0.5)
 
-    # Last resort: AWE appears to reuse the same top-level window. If the visible/active title looks
-    # wrong to pywinauto but the GUI has actually loaded the file, continuing with the original window
-    # is better than stopping here.
     try:
         current_title = fallback_win.window_text()
         _debug(result, f"Falling back to original window, current title={current_title!r}")
@@ -193,11 +190,12 @@ def _open_generate_dialog(design_win, config: AweGuiConfig, result: BuildResult)
     if not config.use_keyboard_fallback:
         raise RuntimeError("Could not open Generate Target Files via menu_select, and keyboard fallback is disabled")
 
-    _debug(result, "Trying keyboard fallback on design window: Alt+T then Down x 8 then Enter")
+    down_count = max(0, int(config.tools_menu_down_count))
+    _debug(result, f"Trying keyboard fallback on design window: Alt+T then Down x {down_count} then Enter")
     design_win.type_keys("%t")
     time.sleep(0.8)
     result.details["windows_after_alt_t"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
-    for _ in range(8):
+    for _ in range(down_count):
         design_win.type_keys("{DOWN}")
         time.sleep(0.08)
     design_win.type_keys("{ENTER}")
