@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -12,6 +13,11 @@ from .screenshot import capture_screenshot
 
 def _debug(result: BuildResult, message: str) -> None:
     result.details.setdefault("debug", []).append(message)
+
+
+def _set_clipboard_text(text: str) -> None:
+    # Avoid pyperclip dependency. clip.exe is available on normal Windows installs.
+    subprocess.run("clip", input=text, text=True, check=True, shell=True)
 
 
 def _list_windows(title_filter: str | None = None, limit: int = 200) -> list[dict[str, str]]:
@@ -93,38 +99,25 @@ def _find_dialog(title_patterns: list[str], timeout_sec: float):
 
 
 def _type_path_and_enter(dlg, input_awj: Path, result: BuildResult):
-    # For AWE's Open Design dialog, the safest observed strategy is to click/focus the dialog,
-    # type the absolute path into the filename field, and press Enter.
     path_text = str(input_awj)
-    _debug(result, f"Typing AWJ path into dialog: {path_text}")
+    _debug(result, f"Entering AWJ path via clipboard: {path_text}")
+    _set_clipboard_text(path_text)
     dlg.set_focus()
-    time.sleep(0.2)
+    time.sleep(0.3)
 
+    # Do NOT click guessed Edit/ComboBox controls. On AWE's Open Design dialog that can hit
+    # the upper-right search field. Keyboard traversal is more stable for this dialog.
     try:
-        # Try to use an Edit control first. Some AWE/MATLAB dialogs are not standard enough
-        # for this, so failure is expected and keyboard fallback follows.
-        edits = [c for c in dlg.descendants() if c.friendly_class_name() in ("Edit", "ComboBox")]
-        if edits:
-            _debug(result, f"Trying first edit-like control; count={len(edits)}")
-            edits[-1].click_input()
-            time.sleep(0.1)
-            edits[-1].type_keys("^a")
-            edits[-1].type_keys(path_text, with_spaces=True, set_foreground=True)
-            edits[-1].type_keys("{ENTER}")
-            return
-    except Exception as exc:
-        _debug(result, f"Edit-control path entry failed: {exc!r}")
-
-    try:
-        _debug(result, "Keyboard path entry fallback")
-        dlg.type_keys("^a")
-        time.sleep(0.1)
-        dlg.type_keys(path_text, with_spaces=True, set_foreground=True)
+        dlg.type_keys("%n")  # Common Windows file dialog accelerator: File name
         time.sleep(0.2)
-        dlg.type_keys("{ENTER}")
-        return
     except Exception as exc:
-        raise RuntimeError(f"Could not type path into open dialog: {exc!r}") from exc
+        _debug(result, f"Alt+N failed, continuing with Ctrl+V fallback: {exc!r}")
+
+    dlg.type_keys("^a")
+    time.sleep(0.1)
+    dlg.type_keys("^v")
+    time.sleep(0.3)
+    dlg.type_keys("{ENTER}")
 
 
 def _wait_for_loaded_design_window(config: AweGuiConfig, input_awj: Path, result: BuildResult):
@@ -201,8 +194,6 @@ def _open_generate_dialog(design_win, config: AweGuiConfig, result: BuildResult)
     if not config.use_keyboard_fallback:
         raise RuntimeError("Could not open Generate Target Files via menu_select, and keyboard fallback is disabled")
 
-    # Important: after AWJ open, AWE creates a new design window. The Generate command must be
-    # sent to that new active design window, not the original launcher window.
     _debug(result, "Trying keyboard fallback on loaded design window: Alt+T then Down x 8 then Enter")
     design_win.type_keys("%t")
     time.sleep(0.8)
