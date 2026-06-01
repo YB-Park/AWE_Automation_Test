@@ -12,5 +12,6 @@
   "close_designer_after_build": false,
   "inspect_title_filter": "AWE|Audio|Open|Generate|Target|Design",
   "inspect_limit": 80,
-  "tools_menu_down_count": 2
+  "tools_menu_down_count": 2,
+  "generate_button_tab_count": 0
 }
