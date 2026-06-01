@@ -11,5 +11,6 @@
   "use_keyboard_fallback": true,
   "close_designer_after_build": false,
   "inspect_title_filter": "AWE|Audio|Open|Generate|Target|Design",
-  "inspect_limit": 80
+  "inspect_limit": 80,
+  "tools_menu_down_count": 2
 }
