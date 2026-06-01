@@ -9,83 +9,153 @@ from .result import BuildResult
 from .screenshot import capture_screenshot
 
 
-def _connect_or_start_designer(config: AweGuiConfig):
+def _debug(result: BuildResult, message: str) -> None:
+    result.details.setdefault("debug", []).append(message)
+
+
+def _list_windows() -> list[dict[str, str]]:
+    from pywinauto import Desktop
+
+    windows = []
+    for w in Desktop(backend="uia").windows():
+        try:
+            windows.append({"title": w.window_text(), "class_name": w.class_name()})
+        except Exception:
+            continue
+    return windows
+
+
+def _connect_or_start_designer(config: AweGuiConfig, result: BuildResult):
     from pywinauto import Application
 
-    # Try to connect first, so repeated tests can reuse an already-open Designer.
+    _debug(result, f"Trying to connect to existing Designer: {config.main_window_title_re}")
     try:
         app = Application(backend="uia").connect(title_re=config.main_window_title_re, timeout=5)
+        _debug(result, "Connected to existing Designer window")
         return app
-    except Exception:
-        app = Application(backend="uia").start(config.designer_exe)
-        app.connect(title_re=config.main_window_title_re, timeout=config.open_timeout_sec)
-        return app
+    except Exception as exc:
+        _debug(result, f"No existing Designer connection: {exc!r}")
+
+    _debug(result, f"Starting Designer: {config.designer_exe}")
+    app = Application(backend="uia").start(config.designer_exe)
+
+    deadline = time.monotonic() + config.open_timeout_sec
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            app.connect(title_re=config.main_window_title_re, timeout=3)
+            _debug(result, "Connected after start")
+            return app
+        except Exception as exc:
+            last_error = exc
+            time.sleep(1.0)
+
+    result.details["visible_windows"] = _list_windows()
+    raise RuntimeError(f"Designer started, but main window did not match {config.main_window_title_re!r}. Last error: {last_error!r}")
 
 
 def _main_window(app, config: AweGuiConfig):
     return app.window(title_re=config.main_window_title_re)
 
 
-def _send_open_file(main, input_awj: Path):
-    main.set_focus()
-    main.type_keys("^o")
-    time.sleep(1.0)
-
-    # Standard Windows Open dialog is usually visible globally.
+def _send_open_file(main, input_awj: Path, result: BuildResult):
     from pywinauto import Desktop
 
-    dlg = Desktop(backend="uia").window(title_re=".*Open.*|.*열기.*")
-    dlg.wait("visible", timeout=15)
+    _debug(result, "Focusing main window")
+    main.set_focus()
+    time.sleep(0.5)
+
+    _debug(result, "Sending Ctrl+O")
+    main.type_keys("^o")
+    time.sleep(1.5)
+
+    result.details["windows_after_ctrl_o"] = _list_windows()
+
+    dialog_patterns = [
+        ".*Open.*|.*열기.*",
+        ".*Select.*|.*선택.*",
+        ".*File.*|.*파일.*",
+    ]
+
+    last_error = None
+    dlg = None
+    for pattern in dialog_patterns:
+        try:
+            candidate = Desktop(backend="uia").window(title_re=pattern)
+            candidate.wait("visible", timeout=5)
+            dlg = candidate
+            _debug(result, f"Open dialog matched: {pattern}")
+            break
+        except Exception as exc:
+            last_error = exc
+
+    if dlg is None:
+        raise RuntimeError(f"Open dialog did not appear after Ctrl+O. Last error: {last_error!r}")
+
     dlg.set_focus()
+    time.sleep(0.3)
 
     # Keyboard approach is often more robust than trying to identify localized controls.
+    _debug(result, f"Typing AWJ path: {input_awj}")
     dlg.type_keys(str(input_awj), with_spaces=True, set_foreground=True)
+    time.sleep(0.2)
     dlg.type_keys("{ENTER}")
 
 
-def _open_generate_dialog(main, config: AweGuiConfig):
+def _open_generate_dialog(main, config: AweGuiConfig, result: BuildResult):
     main.set_focus()
+    time.sleep(0.5)
 
-    # First try menu selection. Menu names may be invisible in some MATLAB/compiled GUIs,
-    # so this may fail; keyboard fallback follows.
+    _debug(result, "Trying menu_select: Tools->Generate Target Files")
     try:
         main.menu_select("Tools->Generate Target Files")
         return
-    except Exception:
-        pass
+    except Exception as exc:
+        _debug(result, f"menu_select failed: {exc!r}")
 
     if not config.use_keyboard_fallback:
         raise RuntimeError("Could not open Generate Target Files via menu_select, and keyboard fallback is disabled")
 
-    # Fallback: Alt+T opens Tools in English UI. The item position can vary by version,
-    # so this is intentionally a first-pass heuristic.
+    _debug(result, "Trying keyboard fallback: Alt+T then Down x 8 then Enter")
     main.type_keys("%t")
-    time.sleep(0.5)
-    # Try a few down counts and Enter. If wrong, the inspect command will help us tune it.
+    time.sleep(0.8)
+    result.details["windows_after_alt_t"] = _list_windows()
     for _ in range(8):
         main.type_keys("{DOWN}")
-        time.sleep(0.05)
+        time.sleep(0.08)
     main.type_keys("{ENTER}")
 
 
-def _click_generate(config: AweGuiConfig):
+def _click_generate(config: AweGuiConfig, result: BuildResult):
     from pywinauto import Desktop
+
+    _debug(result, f"Waiting for Generate dialog: {config.generate_dialog_title_re}")
+    result.details["windows_before_generate_dialog"] = _list_windows()
 
     dlg = Desktop(backend="uia").window(title_re=config.generate_dialog_title_re)
     dlg.wait("visible", timeout=20)
     dlg.set_focus()
 
-    # Try to click a button named Generate. If it is localized or not exposed,
-    # fall back to Enter.
+    # Capture exposed controls so we can tune selectors after the first failure.
+    controls = []
+    try:
+        for c in dlg.descendants():
+            controls.append({"title": c.window_text(), "control_type": c.friendly_class_name()})
+    except Exception as exc:
+        controls.append({"error": repr(exc)})
+    result.details["generate_dialog_controls"] = controls[:200]
+
     for name in ["Generate", "OK", "확인"]:
         try:
+            _debug(result, f"Trying button: {name}")
             btn = dlg.child_window(title=name, control_type="Button")
             btn.wait("enabled", timeout=2)
             btn.click_input()
             return
-        except Exception:
-            continue
+        except Exception as exc:
+            _debug(result, f"Button {name!r} failed: {exc!r}")
 
+    _debug(result, "Falling back to Enter in Generate dialog")
     dlg.type_keys("{ENTER}")
 
 
@@ -113,19 +183,20 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
 
     try:
         result.stage = "start_designer"
-        app = _connect_or_start_designer(config)
+        app = _connect_or_start_designer(config, result)
         main = _main_window(app, config)
         main.wait("visible", timeout=config.open_timeout_sec)
+        _debug(result, f"Main window title: {main.window_text()}")
 
         result.stage = "open_awj"
-        _send_open_file(main, input_path)
+        _send_open_file(main, input_path, result)
         time.sleep(config.load_wait_sec)
 
         result.stage = "open_generate_dialog"
-        _open_generate_dialog(main, config)
+        _open_generate_dialog(main, config, result)
 
         result.stage = "click_generate"
-        _click_generate(config)
+        _click_generate(config, result)
         time.sleep(config.generate_wait_sec)
 
         result.stage = "verify_artifacts"
@@ -148,6 +219,7 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
         result.ok = False
         result.message = f"Automation failed at stage '{result.stage}': {exc}"
         result.errors.append(repr(exc))
+        result.details.setdefault("visible_windows_at_failure", _list_windows())
         result.screenshot = capture_screenshot(config.screenshot_dir, prefix="failure")
 
     result.elapsed_sec = round(time.monotonic() - started, 3)
@@ -157,15 +229,7 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
 def inspect_windows(config: AweGuiConfig) -> BuildResult:
     result = BuildResult(ok=True, stage="inspect", message="Window inspection completed")
     try:
-        from pywinauto import Desktop
-
-        windows = []
-        for w in Desktop(backend="uia").windows():
-            try:
-                windows.append({"title": w.window_text(), "class_name": w.class_name()})
-            except Exception:
-                continue
-        result.details["windows"] = windows
+        result.details["windows"] = _list_windows()
         result.screenshot = capture_screenshot(config.screenshot_dir, prefix="inspect")
     except Exception as exc:
         result.ok = False
