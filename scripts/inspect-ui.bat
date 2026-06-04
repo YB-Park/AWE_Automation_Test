@@ -2,7 +2,10 @@
 setlocal
 
 set CONFIG=%~1
-if "%CONFIG%"=="" set CONFIG=configs\sample.local.json
 
-python -m awe_gui_builder inspect --config "%CONFIG%"
+if "%CONFIG%"=="" (
+  python -m awe_gui_builder inspect --verbose
+) else (
+  python -m awe_gui_builder inspect --config "%CONFIG%" --verbose
+)
 exit /b %ERRORLEVEL%
