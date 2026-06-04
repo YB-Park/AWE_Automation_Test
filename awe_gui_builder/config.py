@@ -19,8 +19,9 @@ class AweGuiConfig:
     expected_extensions: tuple[str, ...] = (".awb", ".tsf")
     screenshot_dir: str = "artifacts/screenshots"
     use_keyboard_fallback: bool = True
-    close_designer_after_build: bool = False
-    inspect_title_filter: str = "AWE|Audio|Open|Generate|Target|Design|Error|Done"
+    close_designer_after_build: bool = True
+    close_result_dialog_after_build: bool = True
+    inspect_title_filter: str = "AWE|Audio|Open|Generate|Target|Design|Error|Done|Save|Confirm"
     inspect_limit: int = 80
     tools_menu_down_count: int = 2
     generate_button_tab_count: int = 0
@@ -41,8 +42,9 @@ class AweGuiConfig:
             expected_extensions=tuple(data.get("expected_extensions", [".awb", ".tsf"])),
             screenshot_dir=str(data.get("screenshot_dir", "artifacts/screenshots")),
             use_keyboard_fallback=bool(data.get("use_keyboard_fallback", True)),
-            close_designer_after_build=bool(data.get("close_designer_after_build", False)),
-            inspect_title_filter=str(data.get("inspect_title_filter", "AWE|Audio|Open|Generate|Target|Design|Error|Done")),
+            close_designer_after_build=bool(data.get("close_designer_after_build", True)),
+            close_result_dialog_after_build=bool(data.get("close_result_dialog_after_build", True)),
+            inspect_title_filter=str(data.get("inspect_title_filter", "AWE|Audio|Open|Generate|Target|Design|Error|Done|Save|Confirm")),
             inspect_limit=int(data.get("inspect_limit", 80)),
             tools_menu_down_count=int(data.get("tools_menu_down_count", 2)),
             generate_button_tab_count=int(data.get("generate_button_tab_count", 0)),
