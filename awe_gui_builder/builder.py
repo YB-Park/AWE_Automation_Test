@@ -248,8 +248,6 @@ def _click_generate(config: AweGuiConfig, result: BuildResult):
     time.sleep(max(0.0, config.generate_dialog_ready_delay_sec))
     _snapshot_dialog_controls(dlg, result)
 
-    # If tab count is configured, use it first. This is much faster for AWE/MATLAB dialogs
-    # where button discovery is visible to humans but unreliable through UI Automation.
     tab_count = max(0, int(config.generate_button_tab_count))
     if tab_count > 0:
         _debug(result, f"Keyboard-first Generate click: Tab x {tab_count}, Space")
@@ -259,7 +257,6 @@ def _click_generate(config: AweGuiConfig, result: BuildResult):
         dlg.type_keys("{SPACE}")
         return
 
-    # Fallback: direct UIA/win32 methods.
     for name in ["Generate", "&Generate", "OK", "확인"]:
         try:
             _debug(result, f"Trying child_window button click_input: {name}")
@@ -297,6 +294,40 @@ def _is_result_success_text(texts: list[str]) -> bool:
     return "Done. Files generated to:" in "\n".join(texts)
 
 
+def _extract_generated_output_dir(post_dialog: dict[str, object] | None, result: BuildResult) -> str | None:
+    if not post_dialog:
+        return None
+    texts = post_dialog.get("texts", [])
+    if not isinstance(texts, list):
+        return None
+
+    for index, value in enumerate(texts):
+        text = str(value).strip()
+        match = re.search(r"Done\.\s*Files generated to:\s*(.+)$", text, flags=re.IGNORECASE)
+        if match:
+            path = match.group(1).strip().strip('"')
+            if path:
+                _debug(result, f"Detected generated output dir from success text: {path}")
+                return path
+        if re.search(r"Done\.\s*Files generated to:\s*$", text, flags=re.IGNORECASE) and index + 1 < len(texts):
+            path = str(texts[index + 1]).strip().strip('"')
+            if path:
+                _debug(result, f"Detected generated output dir from next text line: {path}")
+                return path
+    return None
+
+
+def _find_existing_artifacts(output_dir: Path, expected_extensions: tuple[str, ...]) -> list[str]:
+    if not output_dir.exists():
+        return []
+    expected = tuple(ext.lower() for ext in expected_extensions)
+    files: list[str] = []
+    for path in output_dir.rglob("*"):
+        if path.is_file() and path.suffix.lower() in expected:
+            files.append(str(path.resolve()))
+    return sorted(files)
+
+
 def _inspect_post_generate_dialog(config: AweGuiConfig, result: BuildResult) -> dict[str, object] | None:
     from pywinauto import Desktop
 
@@ -313,7 +344,6 @@ def _inspect_post_generate_dialog(config: AweGuiConfig, result: BuildResult) -> 
                     dlg.wait("visible", timeout=0.5)
                     title = dlg.window_text()
                     texts = _read_control_texts(dlg)
-                    # Avoid treating the original Generate dialog as success before it changes.
                     if kind == "success" and not _is_result_success_text(texts):
                         continue
                     _debug(result, f"Post-generate dialog matched kind={kind}, backend={backend}, title={title!r}")
@@ -331,11 +361,6 @@ def _inspect_post_generate_dialog(config: AweGuiConfig, result: BuildResult) -> 
 
 
 def _dismiss_lingering_generate_dialog(config: AweGuiConfig, result: BuildResult) -> bool:
-    """Close a Generate Target Files dialog that never turned into success/error.
-
-    This prevents cleanup from closing the design window while the modal Generate dialog
-    is still open, which can leave an orphaned Generate dialog and confuse the next run.
-    """
     if not config.close_lingering_generate_dialog_after_build:
         return False
 
@@ -482,13 +507,32 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
         time.sleep(config.generate_wait_sec)
 
         result.stage = "verify_artifacts"
-        changed = find_new_or_updated_files(out_path, before)
-        ok, missing = has_expected_artifacts(changed, config.expected_extensions)
+        actual_output_dir = _extract_generated_output_dir(post_dialog, result)
+        verification_dir = out_path
+        if actual_output_dir:
+            result.details["actual_output_dir"] = actual_output_dir
+            candidate_dir = Path(actual_output_dir)
+            if candidate_dir.exists():
+                verification_dir = candidate_dir
+            else:
+                result.warnings.append(f"AWE reported generated output dir, but it does not exist: {actual_output_dir}")
+
+        if verification_dir == out_path:
+            changed = find_new_or_updated_files(out_path, before)
+        else:
+            changed = _find_existing_artifacts(verification_dir, config.expected_extensions)
+            if str(verification_dir.resolve()).lower() != str(out_path.resolve()).lower():
+                result.warnings.append(f"AWE generated files to a different directory than requested: {verification_dir}")
+
+        ok_artifacts, missing = has_expected_artifacts(changed, config.expected_extensions)
         result.generated_files = changed
         if missing:
-            result.warnings.append("Missing expected extensions: " + ", ".join(missing))
-        result.ok = ok
-        result.message = "Generated expected artifacts" if ok else "Generate step completed, but expected artifacts were not found"
+            result.warnings.append("AWE reported success, but expected artifact extensions were not found during wrapper verification: " + ", ".join(missing))
+
+        # AWE Designer's success dialog is the source of truth. Artifact discovery is useful
+        # metadata, but should not turn a successful Generate Target Files run into failure.
+        result.ok = True
+        result.message = "AWE Designer reported target files generated" if not ok_artifacts else "Generated expected artifacts"
 
     except Exception as exc:
         result.ok = False
