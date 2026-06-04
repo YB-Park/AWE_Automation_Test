@@ -24,6 +24,7 @@ def _compact_result(result: BuildResult) -> dict[str, Any]:
     tokens when this command is called from an MCP server or an LLM tool.
     """
     post_generate_dialog = result.details.get("post_generate_dialog") if result.details else None
+    actual_output_dir = result.details.get("actual_output_dir") if result.details else None
 
     payload: dict[str, Any] = {
         "ok": result.ok,
@@ -31,6 +32,7 @@ def _compact_result(result: BuildResult) -> dict[str, Any]:
         "message": result.message,
         "input_awj": result.input_awj,
         "output_dir": result.output_dir,
+        "actual_output_dir": actual_output_dir,
         "generated_files": result.generated_files,
         "warnings": result.warnings,
         "errors": result.errors,
