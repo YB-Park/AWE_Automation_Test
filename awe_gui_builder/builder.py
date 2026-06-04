@@ -274,6 +274,25 @@ def _click_generate(config: AweGuiConfig, result: BuildResult):
     dlg.type_keys("{ENTER}")
 
 
+def _dismiss_dialog(dlg, result: BuildResult, label: str) -> bool:
+    try:
+        dlg.set_focus()
+        time.sleep(0.15)
+        dlg.type_keys("{ENTER}")
+        _debug(result, f"Closed {label} dialog with Enter")
+        return True
+    except Exception as exc:
+        _debug(result, f"Enter close failed for {label} dialog: {exc!r}")
+
+    try:
+        dlg.close()
+        _debug(result, f"Closed {label} dialog with close()")
+        return True
+    except Exception as exc:
+        _debug(result, f"close() failed for {label} dialog: {exc!r}")
+        return False
+
+
 def _inspect_post_generate_dialog(config: AweGuiConfig, result: BuildResult) -> dict[str, object] | None:
     from pywinauto import Desktop
 
@@ -295,7 +314,10 @@ def _inspect_post_generate_dialog(config: AweGuiConfig, result: BuildResult) -> 
                     if kind == "success" and "Done. Files generated to:" not in joined:
                         continue
                     _debug(result, f"Post-generate dialog matched kind={kind}, backend={backend}, title={title!r}")
-                    return {"kind": kind, "title": title, "texts": texts}
+                    closed = False
+                    if config.close_result_dialog_after_build:
+                        closed = _dismiss_dialog(dlg, result, f"post-generate {kind}")
+                    return {"kind": kind, "title": title, "texts": texts, "closed": closed}
                 except Exception:
                     continue
         time.sleep(0.5)
@@ -305,11 +327,78 @@ def _inspect_post_generate_dialog(config: AweGuiConfig, result: BuildResult) -> 
     return None
 
 
+def _dismiss_possible_save_prompt(result: BuildResult) -> bool:
+    from pywinauto import Desktop
+
+    time.sleep(0.5)
+    for backend in ["uia", "win32"]:
+        try:
+            windows = Desktop(backend=backend).windows()
+        except Exception:
+            continue
+        for win in windows:
+            try:
+                title = win.window_text() or ""
+                texts = _read_control_texts(win, limit=50)
+                joined = "\n".join([title, *texts]).lower()
+                if "save" not in joined and "저장" not in joined:
+                    continue
+
+                win.set_focus()
+                time.sleep(0.15)
+                for button_name in ["No", "&No", "Don't Save", "Do not save", "저장 안 함", "아니요"]:
+                    try:
+                        btn = win.child_window(title=button_name, control_type="Button")
+                        btn.wait("enabled", timeout=0.5)
+                        btn.click_input()
+                        _debug(result, f"Dismissed save prompt by clicking {button_name!r}")
+                        return True
+                    except Exception:
+                        continue
+
+                try:
+                    win.type_keys("%n")
+                    _debug(result, "Dismissed save prompt with Alt+N")
+                    return True
+                except Exception:
+                    win.type_keys("n")
+                    _debug(result, "Dismissed save prompt with N")
+                    return True
+            except Exception as exc:
+                _debug(result, f"Save prompt inspection failed: {exc!r}")
+    return False
+
+
+def _close_design_window(design_win, result: BuildResult) -> None:
+    try:
+        title = design_win.window_text()
+    except Exception:
+        title = "<unknown>"
+    _debug(result, f"Closing design window: {title!r}")
+
+    try:
+        design_win.set_focus()
+        time.sleep(0.2)
+        design_win.close()
+        _debug(result, "Requested design window close via close()")
+    except Exception as exc:
+        _debug(result, f"design_win.close() failed: {exc!r}")
+        try:
+            design_win.type_keys("%{F4}")
+            _debug(result, "Requested design window close via Alt+F4")
+        except Exception as exc2:
+            _debug(result, f"Alt+F4 close failed: {exc2!r}")
+
+    if _dismiss_possible_save_prompt(result):
+        time.sleep(0.5)
+
+
 def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Path) -> BuildResult:
     started = time.monotonic()
     input_path = Path(input_awj).resolve()
     out_path = ensure_clean_output_dir(output_dir).resolve()
     result = BuildResult(ok=False, stage="start", message="Build started", input_awj=str(input_path), output_dir=str(out_path))
+    design_win = None
 
     if not input_path.exists():
         result.stage = "validate_input"
@@ -343,7 +432,6 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
                 result.ok = False
                 result.message = "Generate Target Files failed"
                 result.errors.extend(str(x) for x in post_dialog.get("texts", []))
-                result.elapsed_sec = round(time.monotonic() - started, 3)
                 return result
 
         time.sleep(config.generate_wait_sec)
@@ -357,19 +445,20 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
         result.ok = ok
         result.message = "Generated expected artifacts" if ok else "Generate step completed, but expected artifacts were not found"
 
-        if config.close_designer_after_build:
-            try:
-                design_win.close()
-            except Exception:
-                pass
     except Exception as exc:
         result.ok = False
         result.message = f"Automation failed at stage '{result.stage}': {exc}"
         result.errors.append(repr(exc))
         result.details.setdefault("visible_windows_at_failure", _list_windows(config.inspect_title_filter, config.inspect_limit))
         result.screenshot = capture_screenshot(config.screenshot_dir, prefix="failure")
+    finally:
+        if config.close_designer_after_build and design_win is not None:
+            try:
+                _close_design_window(design_win, result)
+            except Exception as exc:
+                _debug(result, f"Unexpected design-window cleanup failure: {exc!r}")
+        result.elapsed_sec = round(time.monotonic() - started, 3)
 
-    result.elapsed_sec = round(time.monotonic() - started, 3)
     return result
 
 
