@@ -11,8 +11,25 @@ from .result import BuildResult
 from .screenshot import capture_screenshot
 
 
+FOCUS_SETTLE_SEC = 0.03
+
+
 def _debug(result: BuildResult, message: str) -> None:
     result.details.setdefault("debug", []).append(message)
+
+
+def _focus_before_input(target, result: BuildResult, label: str, delay_sec: float = FOCUS_SETTLE_SEC) -> None:
+    """Best-effort refocus right before injecting keyboard/mouse input.
+
+    This is intentionally lightweight. It reduces accidental focus drift without
+    adding strict active-window validation that could make PoC demos brittle.
+    """
+    try:
+        target.set_focus()
+        if delay_sec > 0:
+            time.sleep(delay_sec)
+    except Exception as exc:
+        _debug(result, f"set_focus before input failed for {label}: {exc!r}")
 
 
 def _set_clipboard_text(text: str) -> None:
@@ -101,17 +118,18 @@ def _type_path_and_enter(dlg, input_awj: Path, result: BuildResult):
     path_text = str(input_awj)
     _debug(result, f"Entering AWJ path via clipboard: {path_text}")
     _set_clipboard_text(path_text)
-    dlg.set_focus()
-    time.sleep(0.15)
+    _focus_before_input(dlg, result, "Open Design dialog before file path")
     try:
         dlg.type_keys("%n")
         time.sleep(0.1)
     except Exception as exc:
         _debug(result, f"Alt+N failed, continuing: {exc!r}")
+    _focus_before_input(dlg, result, "Open Design dialog before paste", delay_sec=0.01)
     dlg.type_keys("^a")
     time.sleep(0.05)
     dlg.type_keys("^v")
     time.sleep(0.15)
+    _focus_before_input(dlg, result, "Open Design dialog before Enter", delay_sec=0.01)
     dlg.type_keys("{ENTER}")
 
 
@@ -163,8 +181,7 @@ def _wait_for_loaded_design_window(config: AweGuiConfig, input_awj: Path, fallba
 
 def _send_open_file(main, input_awj: Path, config: AweGuiConfig, result: BuildResult):
     _debug(result, "Focusing launcher/main window")
-    main.set_focus()
-    time.sleep(0.2)
+    _focus_before_input(main, result, "launcher/main window before Ctrl+O")
     _debug(result, "Sending Ctrl+O")
     main.type_keys("^o")
     time.sleep(max(0.0, config.open_dialog_after_ctrl_o_delay_sec))
@@ -177,8 +194,7 @@ def _send_open_file(main, input_awj: Path, config: AweGuiConfig, result: BuildRe
 
 
 def _open_generate_dialog(design_win, config: AweGuiConfig, result: BuildResult):
-    design_win.set_focus()
-    time.sleep(0.2)
+    _focus_before_input(design_win, result, "design window before Generate menu")
     _debug(result, f"Generate command target window title: {design_win.window_text()!r}")
     _debug(result, "Trying menu_select: Tools->Generate Target Files")
     try:
@@ -192,12 +208,15 @@ def _open_generate_dialog(design_win, config: AweGuiConfig, result: BuildResult)
 
     down_count = max(0, int(config.tools_menu_down_count))
     _debug(result, f"Trying keyboard fallback on design window: Alt+T then Down x {down_count} then Enter")
+    _focus_before_input(design_win, result, "design window before Alt+T")
     design_win.type_keys("%t")
     time.sleep(0.4)
     result.details["windows_after_alt_t"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
     for _ in range(down_count):
+        _focus_before_input(design_win, result, "design window before Tools Down", delay_sec=0.0)
         design_win.type_keys("{DOWN}")
         time.sleep(0.05)
+    _focus_before_input(design_win, result, "design window before Tools Enter", delay_sec=0.0)
     design_win.type_keys("{ENTER}")
 
 
@@ -244,22 +263,25 @@ def _click_generate(config: AweGuiConfig, result: BuildResult):
     result.details["windows_before_generate_dialog"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
     dlg, backend, pattern = _find_dialog([config.generate_dialog_title_re, ".*Generate.*", ".*Target.*"], timeout_sec=5)
     _debug(result, f"Generate dialog matched backend={backend}, pattern={pattern}, title={dlg.window_text()}")
-    dlg.set_focus()
+    _focus_before_input(dlg, result, "Generate dialog before button navigation")
     time.sleep(max(0.0, config.generate_dialog_ready_delay_sec))
     _snapshot_dialog_controls(dlg, result)
 
     tab_count = max(0, int(config.generate_button_tab_count))
     if tab_count > 0:
         _debug(result, f"Keyboard-first Generate click: Tab x {tab_count}, Space")
+        _focus_before_input(dlg, result, "Generate dialog before Tab sequence")
         for _ in range(tab_count):
             dlg.type_keys("{TAB}")
             time.sleep(0.03)
+        _focus_before_input(dlg, result, "Generate dialog before Space", delay_sec=0.01)
         dlg.type_keys("{SPACE}")
         return
 
     for name in ["Generate", "&Generate", "OK", "확인"]:
         try:
             _debug(result, f"Trying child_window button click_input: {name}")
+            _focus_before_input(dlg, result, f"Generate dialog before clicking {name}")
             btn = dlg.child_window(title=name, control_type="Button")
             btn.wait("enabled", timeout=1)
             btn.click_input()
@@ -268,13 +290,13 @@ def _click_generate(config: AweGuiConfig, result: BuildResult):
             _debug(result, f"click_input button {name!r} failed: {exc!r}")
 
     _debug(result, "Final fallback: Enter in Generate dialog")
+    _focus_before_input(dlg, result, "Generate dialog before final Enter")
     dlg.type_keys("{ENTER}")
 
 
 def _dismiss_dialog(dlg, result: BuildResult, label: str) -> bool:
     try:
-        dlg.set_focus()
-        time.sleep(0.15)
+        _focus_before_input(dlg, result, f"{label} dialog before Enter")
         dlg.type_keys("{ENTER}")
         _debug(result, f"Closed {label} dialog with Enter")
         return True
@@ -376,8 +398,7 @@ def _dismiss_lingering_generate_dialog(config: AweGuiConfig, result: BuildResult
             title = dlg.window_text()
             _debug(result, f"Closing lingering Generate dialog before design-window cleanup: backend={backend}, title={title!r}")
             try:
-                dlg.set_focus()
-                time.sleep(0.1)
+                _focus_before_input(dlg, result, "lingering Generate dialog before ESC")
                 dlg.type_keys("{ESC}")
             except Exception as exc:
                 _debug(result, f"ESC failed for lingering Generate dialog: {exc!r}")
@@ -409,8 +430,7 @@ def _dismiss_possible_save_prompt(result: BuildResult) -> bool:
                 if "save" not in joined and "저장" not in joined:
                     continue
 
-                win.set_focus()
-                time.sleep(0.15)
+                _focus_before_input(win, result, "save prompt")
                 for button_name in ["No", "&No", "Don't Save", "Do not save", "저장 안 함", "아니요"]:
                     try:
                         btn = win.child_window(title=button_name, control_type="Button")
@@ -422,10 +442,12 @@ def _dismiss_possible_save_prompt(result: BuildResult) -> bool:
                         continue
 
                 try:
+                    _focus_before_input(win, result, "save prompt before Alt+N", delay_sec=0.01)
                     win.type_keys("%n")
                     _debug(result, "Dismissed save prompt with Alt+N")
                     return True
                 except Exception:
+                    _focus_before_input(win, result, "save prompt before N", delay_sec=0.01)
                     win.type_keys("n")
                     _debug(result, "Dismissed save prompt with N")
                     return True
@@ -442,13 +464,13 @@ def _close_design_window(design_win, result: BuildResult) -> None:
     _debug(result, f"Closing design window: {title!r}")
 
     try:
-        design_win.set_focus()
-        time.sleep(0.2)
+        _focus_before_input(design_win, result, "design window before close")
         design_win.close()
         _debug(result, "Requested design window close via close()")
     except Exception as exc:
         _debug(result, f"design_win.close() failed: {exc!r}")
         try:
+            _focus_before_input(design_win, result, "design window before Alt+F4")
             design_win.type_keys("%{F4}")
             _debug(result, "Requested design window close via Alt+F4")
         except Exception as exc2:
@@ -529,8 +551,6 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
         if missing:
             result.warnings.append("AWE reported success, but expected artifact extensions were not found during wrapper verification: " + ", ".join(missing))
 
-        # AWE Designer's success dialog is the source of truth. Artifact discovery is useful
-        # metadata, but should not turn a successful Generate Target Files run into failure.
         result.ok = True
         result.message = "AWE Designer reported target files generated" if not ok_artifacts else "Generated expected artifacts"
 
