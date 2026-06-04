@@ -18,9 +18,9 @@ set "SCRIPT_DIR=%~dp0"
 pushd "%SCRIPT_DIR%.." || exit /b 1
 
 if "%CONFIG%"=="" (
-  python -m awe_gui_builder build --input "%INPUT_AWJ%" --output "%OUTPUT_DIR%"
+  python -m awe_gui_builder build --input "%INPUT_AWJ%" --output "%OUTPUT_DIR%" --progress --progress-interval 10
 ) else (
-  python -m awe_gui_builder build --config "%CONFIG%" --input "%INPUT_AWJ%" --output "%OUTPUT_DIR%"
+  python -m awe_gui_builder build --config "%CONFIG%" --input "%INPUT_AWJ%" --output "%OUTPUT_DIR%" --progress --progress-interval 10
 )
 set "EXIT_CODE=%ERRORLEVEL%"
 
