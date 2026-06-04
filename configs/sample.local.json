@@ -5,6 +5,7 @@
   "generate_dialog_title_re": ".*Generate Target Files.*",
   "generate_error_dialog_title_re": ".*Generate Target Files Error.*",
   "open_timeout_sec": 90,
+  "open_dialog_after_ctrl_o_delay_sec": 0.5,
   "load_wait_sec": 8.0,
   "generate_wait_sec": 2.0,
   "expected_extensions": [".awb", ".tsf"],
@@ -12,10 +13,11 @@
   "use_keyboard_fallback": true,
   "close_designer_after_build": true,
   "close_result_dialog_after_build": true,
+  "close_lingering_generate_dialog_after_build": true,
   "inspect_title_filter": "AWE|Audio|Open|Generate|Target|Design|Error|Done|Save|Confirm",
   "inspect_limit": 80,
   "tools_menu_down_count": 2,
   "generate_button_tab_count": 11,
-  "generate_dialog_ready_delay_sec": 0.5,
+  "generate_dialog_ready_delay_sec": 1.5,
   "post_generate_timeout_sec": 30.0
 }
