@@ -84,11 +84,11 @@ def _find_dialog(title_patterns: list[str], timeout_sec: float):
             for pattern in title_patterns:
                 try:
                     candidate = Desktop(backend=backend).window(title_re=pattern)
-                    candidate.wait("visible", timeout=1)
+                    candidate.wait("visible", timeout=0.5)
                     return candidate, backend, pattern
                 except Exception as exc:
                     last_error = exc
-        time.sleep(0.25)
+        time.sleep(0.1)
     raise RuntimeError(f"Dialog not found. patterns={title_patterns!r}, last_error={last_error!r}")
 
 
@@ -102,16 +102,16 @@ def _type_path_and_enter(dlg, input_awj: Path, result: BuildResult):
     _debug(result, f"Entering AWJ path via clipboard: {path_text}")
     _set_clipboard_text(path_text)
     dlg.set_focus()
-    time.sleep(0.3)
+    time.sleep(0.15)
     try:
         dlg.type_keys("%n")
-        time.sleep(0.2)
+        time.sleep(0.1)
     except Exception as exc:
         _debug(result, f"Alt+N failed, continuing: {exc!r}")
     dlg.type_keys("^a")
-    time.sleep(0.1)
+    time.sleep(0.05)
     dlg.type_keys("^v")
-    time.sleep(0.3)
+    time.sleep(0.15)
     dlg.type_keys("{ENTER}")
 
 
@@ -130,7 +130,7 @@ def _wait_for_loaded_design_window(config: AweGuiConfig, input_awj: Path, fallba
         for backend in ["uia", "win32"]:
             try:
                 win = Desktop(backend=backend).window(title_re=pattern)
-                win.wait("visible", timeout=1)
+                win.wait("visible", timeout=0.5)
                 _debug(result, f"Loaded design window matched backend={backend}, title={win.window_text()}")
                 return win
             except Exception as exc:
@@ -146,7 +146,7 @@ def _wait_for_loaded_design_window(config: AweGuiConfig, input_awj: Path, fallba
                 return active
         except Exception as exc:
             _debug(result, f"Active window check failed: {exc!r}")
-        time.sleep(0.5)
+        time.sleep(0.25)
 
     try:
         current_title = fallback_win.window_text()
@@ -164,13 +164,13 @@ def _wait_for_loaded_design_window(config: AweGuiConfig, input_awj: Path, fallba
 def _send_open_file(main, input_awj: Path, config: AweGuiConfig, result: BuildResult):
     _debug(result, "Focusing launcher/main window")
     main.set_focus()
-    time.sleep(0.5)
+    time.sleep(0.2)
     _debug(result, "Sending Ctrl+O")
     main.type_keys("^o")
-    time.sleep(1.0)
+    time.sleep(max(0.0, config.open_dialog_after_ctrl_o_delay_sec))
     result.details["windows_after_ctrl_o"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
 
-    dlg, backend, pattern = _find_dialog([".*Open Design.*", ".*Open.*|.*열기.*", ".*Select.*|.*선택.*", ".*File.*|.*파일.*"], timeout_sec=20)
+    dlg, backend, pattern = _find_dialog([".*Open Design.*", ".*Open.*|.*열기.*", ".*Select.*|.*선택.*", ".*File.*|.*파일.*"], timeout_sec=10)
     _debug(result, f"Open dialog matched backend={backend}, pattern={pattern}, title={dlg.window_text()}")
     _type_path_and_enter(dlg, input_awj, result)
     return _wait_for_loaded_design_window(config, input_awj, main, result)
@@ -178,7 +178,7 @@ def _send_open_file(main, input_awj: Path, config: AweGuiConfig, result: BuildRe
 
 def _open_generate_dialog(design_win, config: AweGuiConfig, result: BuildResult):
     design_win.set_focus()
-    time.sleep(0.5)
+    time.sleep(0.2)
     _debug(result, f"Generate command target window title: {design_win.window_text()!r}")
     _debug(result, "Trying menu_select: Tools->Generate Target Files")
     try:
@@ -193,11 +193,11 @@ def _open_generate_dialog(design_win, config: AweGuiConfig, result: BuildResult)
     down_count = max(0, int(config.tools_menu_down_count))
     _debug(result, f"Trying keyboard fallback on design window: Alt+T then Down x {down_count} then Enter")
     design_win.type_keys("%t")
-    time.sleep(0.8)
+    time.sleep(0.4)
     result.details["windows_after_alt_t"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
     for _ in range(down_count):
         design_win.type_keys("{DOWN}")
-        time.sleep(0.08)
+        time.sleep(0.05)
     design_win.type_keys("{ENTER}")
 
 
@@ -255,7 +255,7 @@ def _click_generate(config: AweGuiConfig, result: BuildResult):
         _debug(result, f"Keyboard-first Generate click: Tab x {tab_count}, Space")
         for _ in range(tab_count):
             dlg.type_keys("{TAB}")
-            time.sleep(0.04)
+            time.sleep(0.03)
         dlg.type_keys("{SPACE}")
         return
 
@@ -293,6 +293,10 @@ def _dismiss_dialog(dlg, result: BuildResult, label: str) -> bool:
         return False
 
 
+def _is_result_success_text(texts: list[str]) -> bool:
+    return "Done. Files generated to:" in "\n".join(texts)
+
+
 def _inspect_post_generate_dialog(config: AweGuiConfig, result: BuildResult) -> dict[str, object] | None:
     from pywinauto import Desktop
 
@@ -310,8 +314,7 @@ def _inspect_post_generate_dialog(config: AweGuiConfig, result: BuildResult) -> 
                     title = dlg.window_text()
                     texts = _read_control_texts(dlg)
                     # Avoid treating the original Generate dialog as success before it changes.
-                    joined = "\n".join(texts)
-                    if kind == "success" and "Done. Files generated to:" not in joined:
+                    if kind == "success" and not _is_result_success_text(texts):
                         continue
                     _debug(result, f"Post-generate dialog matched kind={kind}, backend={backend}, title={title!r}")
                     closed = False
@@ -325,6 +328,43 @@ def _inspect_post_generate_dialog(config: AweGuiConfig, result: BuildResult) -> 
     _debug(result, "No post-generate dialog detected before timeout")
     result.details["windows_after_generate_timeout"] = _list_windows(config.inspect_title_filter, config.inspect_limit)
     return None
+
+
+def _dismiss_lingering_generate_dialog(config: AweGuiConfig, result: BuildResult) -> bool:
+    """Close a Generate Target Files dialog that never turned into success/error.
+
+    This prevents cleanup from closing the design window while the modal Generate dialog
+    is still open, which can leave an orphaned Generate dialog and confuse the next run.
+    """
+    if not config.close_lingering_generate_dialog_after_build:
+        return False
+
+    from pywinauto import Desktop
+
+    for backend in ["uia", "win32"]:
+        try:
+            dlg = Desktop(backend=backend).window(title_re=config.generate_dialog_title_re)
+            dlg.wait("visible", timeout=0.5)
+            texts = _read_control_texts(dlg)
+            if _is_result_success_text(texts):
+                continue
+            title = dlg.window_text()
+            _debug(result, f"Closing lingering Generate dialog before design-window cleanup: backend={backend}, title={title!r}")
+            try:
+                dlg.set_focus()
+                time.sleep(0.1)
+                dlg.type_keys("{ESC}")
+            except Exception as exc:
+                _debug(result, f"ESC failed for lingering Generate dialog: {exc!r}")
+                try:
+                    dlg.close()
+                except Exception as exc2:
+                    _debug(result, f"close() failed for lingering Generate dialog: {exc2!r}")
+                    return False
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _dismiss_possible_save_prompt(result: BuildResult) -> bool:
@@ -433,6 +473,11 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
                 result.message = "Generate Target Files failed"
                 result.errors.extend(str(x) for x in post_dialog.get("texts", []))
                 return result
+        else:
+            result.ok = False
+            result.message = "Generate Target Files did not report success or error"
+            result.errors.append("No success or error dialog was detected after pressing Generate. The Generate dialog may still be open or the button press may not have taken effect.")
+            return result
 
         time.sleep(config.generate_wait_sec)
 
@@ -452,6 +497,10 @@ def build_awj(config: AweGuiConfig, input_awj: str | Path, output_dir: str | Pat
         result.details.setdefault("visible_windows_at_failure", _list_windows(config.inspect_title_filter, config.inspect_limit))
         result.screenshot = capture_screenshot(config.screenshot_dir, prefix="failure")
     finally:
+        try:
+            _dismiss_lingering_generate_dialog(config, result)
+        except Exception as exc:
+            _debug(result, f"Lingering Generate dialog cleanup failed: {exc!r}")
         if config.close_designer_after_build and design_win is not None:
             try:
                 _close_design_window(design_win, result)
