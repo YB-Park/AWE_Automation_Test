@@ -7,9 +7,12 @@ if "%~2"=="" goto usage
 set INPUT_AWJ=%~1
 set OUTPUT_DIR=%~2
 set CONFIG=%~3
-if "%CONFIG%"=="" set CONFIG=configs\sample.local.json
 
-python -m awe_gui_builder build --config "%CONFIG%" --input "%INPUT_AWJ%" --output "%OUTPUT_DIR%"
+if "%CONFIG%"=="" (
+  python -m awe_gui_builder build --input "%INPUT_AWJ%" --output "%OUTPUT_DIR%"
+) else (
+  python -m awe_gui_builder build --config "%CONFIG%" --input "%INPUT_AWJ%" --output "%OUTPUT_DIR%"
+)
 exit /b %ERRORLEVEL%
 
 :usage
